@@ -1,0 +1,390 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+/* ---------------------------- Configuration --------------------------- */
+#define MAX_FLIGHTS            50
+#define MAX_RESERVATIONS       300
+#define MAX_SEATS_PER_BOOKING  10
+#define FLIGHTNO_LEN           10
+#define CITY_LEN               40
+#define TIME_LEN               20
+#define NAME_LEN                50
+#define MAX_ROWS                20
+#define MAX_COLS                6
+#define MAX_SEATS               (MAX_ROWS * MAX_COLS)   /* 120 seats per flight */
+
+#define SEAT_AVAILABLE          'O'
+#define SEAT_BOOKED             'X'
+
+#define FLIGHTS_FILE            "flights.dat"
+#define RESERVATIONS_FILE       "reservations.dat"
+
+/* ------------------------------- Types --------------------------------- */
+typedef struct {
+    int   id;
+    char  flight_number[FLIGHTNO_LEN];
+    char  origin[CITY_LEN];
+    char  destination[CITY_LEN];
+    char  departure_time[TIME_LEN];
+    float price;
+    int   rows;
+    int   cols;
+    char  seats[MAX_SEATS];   /* 'O' = available, 'X' = booked */
+} Flight;
+
+typedef struct {
+    int   reservation_id;
+    int   flight_id;
+    char  passenger_name[NAME_LEN];
+    int   seat_indices[MAX_SEATS_PER_BOOKING];
+    int   seat_count;
+    float total_amount;
+    int   active;   /* 1 = active, 0 = cancelled */
+} Reservation;
+
+/* ------------------------------ Globals --------------------------------- */
+static Flight      g_flights[MAX_FLIGHTS];
+static int         g_flight_count;
+static Reservation g_reservations[MAX_RESERVATIONS];
+static int         g_reservation_count;
+
+/* ------------------------- Input helper functions ------------------------ */
+static void clear_input_buffer(void) {
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF) { /* discard */ }
+}
+
+static int read_int_in_range(const char *prompt, int min, int max) {
+    int value, result;
+    while (1) {
+        printf("%s", prompt);
+        result = scanf("%d", &value);
+        clear_input_buffer();
+        if (result != 1) { printf("Invalid input. Please enter a number.\n"); continue; }
+        if (value < min || value > max) { printf("Please enter a value between %d and %d.\n", min, max); continue; }
+        return value;
+    }
+}
+
+static float read_positive_float(const char *prompt) {
+    float value; int result;
+    while (1) {
+        printf("%s", prompt);
+        result = scanf("%f", &value);
+        clear_input_buffer();
+        if (result != 1 || value <= 0) { printf("Invalid input. Please enter a positive number.\n"); continue; }
+        return value;
+    }
+}
+
+static void read_line(const char *prompt, char *buf, int len) {
+    printf("%s", prompt);
+    if (fgets(buf, len, stdin) != NULL) {
+        size_t l = strlen(buf);
+        if (l > 0 && buf[l - 1] == '\n') buf[l - 1] = '\0';
+    } else {
+        buf[0] = '\0';
+    }
+}
+
+/* ------------------------------ Flight logic ------------------------------ */
+static int flight_load_all(void) {
+    FILE *fp = fopen(FLIGHTS_FILE, "rb");
+    if (fp == NULL) return 0;
+    int count = 0;
+    while (count < MAX_FLIGHTS && fread(&g_flights[count], sizeof(Flight), 1, fp) == 1) count++;
+    fclose(fp);
+    return count;
+}
+
+static int flight_save_all(void) {
+    FILE *fp = fopen(FLIGHTS_FILE, "wb");
+    if (fp == NULL) { printf("Error: could not save flights.\n"); return -1; }
+    size_t written = fwrite(g_flights, sizeof(Flight), (size_t)g_flight_count, fp);
+    fclose(fp);
+    return (written == (size_t)g_flight_count) ? 0 : -1;
+}
+
+static void flight_add(const char *flight_number, const char *origin, const char *destination,
+                        const char *departure_time, float price, int rows, int cols) {
+    if (g_flight_count >= MAX_FLIGHTS) { printf("Cannot add more flights: schedule full.\n"); return; }
+    if (rows * cols > MAX_SEATS) { printf("Cannot add flight: too many seats requested.\n"); return; }
+
+    Flight *f = &g_flights[g_flight_count];
+    f->id = g_flight_count + 1;
+    strncpy(f->flight_number, flight_number, FLIGHTNO_LEN - 1); f->flight_number[FLIGHTNO_LEN - 1] = '\0';
+    strncpy(f->origin, origin, CITY_LEN - 1);                   f->origin[CITY_LEN - 1] = '\0';
+    strncpy(f->destination, destination, CITY_LEN - 1);         f->destination[CITY_LEN - 1] = '\0';
+    strncpy(f->departure_time, departure_time, TIME_LEN - 1);   f->departure_time[TIME_LEN - 1] = '\0';
+    f->price = price;
+    f->rows = rows;
+    f->cols = cols;
+    memset(f->seats, SEAT_AVAILABLE, MAX_SEATS);
+
+    g_flight_count++;
+    flight_save_all();
+}
+
+static int flight_find_index_by_id(int id) {
+    for (int i = 0; i < g_flight_count; i++)
+        if (g_flights[i].id == id) return i;
+    return -1;
+}
+
+static int flight_count_available_seats(const Flight *f) {
+    int available = 0, total = f->rows * f->cols;
+    for (int i = 0; i < total; i++)
+        if (f->seats[i] == SEAT_AVAILABLE) available++;
+    return available;
+}
+
+static void flight_display_list(void) {
+    if (g_flight_count == 0) { printf("\nNo flights scheduled right now.\n"); return; }
+    printf("\n%-4s %-8s %-16s %-16s %-8s %-8s %s\n",
+           "ID", "Flight", "From", "To", "Depart", "Fare", "Seats Left");
+    printf("----------------------------------------------------------------------------------\n");
+    for (int i = 0; i < g_flight_count; i++) {
+        printf("%-4d %-8s %-16s %-16s %-8s %-8.2f %d/%d\n",
+               g_flights[i].id, g_flights[i].flight_number, g_flights[i].origin, g_flights[i].destination,
+               g_flights[i].departure_time, g_flights[i].price,
+               flight_count_available_seats(&g_flights[i]), g_flights[i].rows * g_flights[i].cols);
+    }
+}
+
+static void flight_display_seat_map(const Flight *f) {
+    printf("\nSeat map for flight %s (%s -> %s, %s):\n\n",
+           f->flight_number, f->origin, f->destination, f->departure_time);
+    int seat_num = 1;
+    for (int r = 0; r < f->rows; r++) {
+        printf("Row %2d: ", r + 1);
+        for (int c = 0; c < f->cols; c++) {
+            int idx = r * f->cols + c;
+            printf("[%3d:%c] ", seat_num, f->seats[idx]);
+            seat_num++;
+        }
+        printf("\n");
+    }
+    printf("\nLegend: %c = available, %c = booked\n", SEAT_AVAILABLE, SEAT_BOOKED);
+}
+
+/* --------------------------- Reservation logic ----------------------------- */
+static int reservation_load_all(void) {
+    FILE *fp = fopen(RESERVATIONS_FILE, "rb");
+    if (fp == NULL) return 0;
+    int count = 0;
+    while (count < MAX_RESERVATIONS && fread(&g_reservations[count], sizeof(Reservation), 1, fp) == 1) count++;
+    fclose(fp);
+    return count;
+}
+
+static int reservation_save_all(void) {
+    FILE *fp = fopen(RESERVATIONS_FILE, "wb");
+    if (fp == NULL) { printf("Error: could not save reservations.\n"); return -1; }
+    size_t written = fwrite(g_reservations, sizeof(Reservation), (size_t)g_reservation_count, fp);
+    fclose(fp);
+    return (written == (size_t)g_reservation_count) ? 0 : -1;
+}
+
+static int reservation_next_id(void) {
+    int max_id = 0;
+    for (int i = 0; i < g_reservation_count; i++)
+        if (g_reservations[i].reservation_id > max_id) max_id = g_reservations[i].reservation_id;
+    return max_id + 1;
+}
+
+/* Validates every seat is free BEFORE marking any of them booked, so a bad
+   request never leaves the flight in a half-booked state. Returns the new
+   reservation_id on success, or -1 on failure. */
+static int reservation_create(int flight_id, const char *passenger_name,
+                               const int *seat_indices, int seat_count) {
+    int fi = flight_find_index_by_id(flight_id);
+    if (fi == -1) { printf("Reservation failed: flight not found.\n"); return -1; }
+    if (g_reservation_count >= MAX_RESERVATIONS) { printf("Reservation failed: system full.\n"); return -1; }
+
+    Flight *f = &g_flights[fi];
+
+    for (int i = 0; i < seat_count; i++) {
+        int idx = seat_indices[i];
+        if (idx < 0 || idx >= f->rows * f->cols) { printf("Reservation failed: seat out of range.\n"); return -1; }
+        if (f->seats[idx] != SEAT_AVAILABLE) { printf("Reservation failed: seat %d already booked.\n", idx + 1); return -1; }
+    }
+
+    for (int i = 0; i < seat_count; i++) f->seats[seat_indices[i]] = SEAT_BOOKED;
+
+    Reservation *r = &g_reservations[g_reservation_count];
+    r->reservation_id = reservation_next_id();
+    r->flight_id = flight_id;
+    strncpy(r->passenger_name, passenger_name, NAME_LEN - 1); r->passenger_name[NAME_LEN - 1] = '\0';
+    r->seat_count = seat_count;
+    for (int i = 0; i < seat_count; i++) r->seat_indices[i] = seat_indices[i];
+    r->total_amount = f->price * seat_count;
+    r->active = 1;
+    g_reservation_count++;
+
+    flight_save_all();
+    reservation_save_all();
+    return r->reservation_id;
+}
+
+static int reservation_cancel(int reservation_id) {
+    for (int i = 0; i < g_reservation_count; i++) {
+        if (g_reservations[i].reservation_id == reservation_id && g_reservations[i].active) {
+            int fi = flight_find_index_by_id(g_reservations[i].flight_id);
+            if (fi != -1) {
+                Flight *f = &g_flights[fi];
+                for (int s = 0; s < g_reservations[i].seat_count; s++)
+                    f->seats[g_reservations[i].seat_indices[s]] = SEAT_AVAILABLE;
+            }
+            g_reservations[i].active = 0;
+            flight_save_all();
+            reservation_save_all();
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void reservation_print_ticket(const Reservation *r, const Flight *f) {
+    printf("\n================= BOARDING CONFIRMATION =================\n");
+    printf(" Reservation ID : %d\n", r->reservation_id);
+    printf(" Flight         : %s (%s -> %s)\n", f->flight_number, f->origin, f->destination);
+    printf(" Departure      : %s\n", f->departure_time);
+    printf(" Passenger      : %s\n", r->passenger_name);
+    printf(" Seats booked   : ");
+    for (int i = 0; i < r->seat_count; i++) {
+        printf("%d", r->seat_indices[i] + 1);
+        if (i < r->seat_count - 1) printf(", ");
+    }
+    printf("\n Total fare     : %.2f\n", r->total_amount);
+    printf("===========================================================\n");
+}
+
+static void reservation_display_all(void) {
+    if (g_reservation_count == 0) { printf("\nNo reservations found.\n"); return; }
+    printf("\n%-6s %-20s %-10s %-8s %-8s\n", "ID", "Passenger", "Flight", "Seats", "Status");
+    printf("------------------------------------------------------------------\n");
+    for (int i = 0; i < g_reservation_count; i++) {
+        int fi = flight_find_index_by_id(g_reservations[i].flight_id);
+        const char *fno = (fi != -1) ? g_flights[fi].flight_number : "(deleted)";
+        printf("%-6d %-20s %-10s %-8d %-8s\n",
+               g_reservations[i].reservation_id, g_reservations[i].passenger_name, fno,
+               g_reservations[i].seat_count, g_reservations[i].active ? "ACTIVE" : "CANCELLED");
+    }
+}
+
+/* -------------------------------- Flows ---------------------------------- */
+static void seed_demo_flights_if_empty(void) {
+    if (g_flight_count > 0) return;
+    flight_add("AI202",  "Chennai",   "Delhi",     "06:30", 4500.0f, 15, 6);
+    flight_add("EK517",  "Chennai",   "Dubai",     "23:15", 18500.0f, 20, 6);
+    flight_add("6E345",  "Bengaluru", "Mumbai",    "09:45", 3200.0f, 12, 6);
+}
+
+static void flow_book_seat(void) {
+    flight_display_list();
+    if (g_flight_count == 0) return;
+
+    int flight_id = read_int_in_range("\nEnter flight ID to book: ", 1, g_flight_count);
+    int fi = flight_find_index_by_id(flight_id);
+    if (fi == -1) { printf("Flight not found.\n"); return; }
+
+    flight_display_seat_map(&g_flights[fi]);
+    if (flight_count_available_seats(&g_flights[fi]) == 0) { printf("Sorry, this flight is fully booked.\n"); return; }
+
+    char name[NAME_LEN];
+    read_line("Passenger name: ", name, NAME_LEN);
+
+    int num_seats = read_int_in_range("How many seats do you want? ", 1, MAX_SEATS_PER_BOOKING);
+    int seat_indices[MAX_SEATS_PER_BOOKING];
+    int max_seat_num = g_flights[fi].rows * g_flights[fi].cols;
+
+    for (int i = 0; i < num_seats; i++) {
+        char prompt[64];
+        snprintf(prompt, sizeof(prompt), "Seat number %d of %d: ", i + 1, num_seats);
+        int seat_num = read_int_in_range(prompt, 1, max_seat_num);
+        seat_indices[i] = seat_num - 1;
+    }
+
+    int reservation_id = reservation_create(flight_id, name, seat_indices, num_seats);
+    if (reservation_id != -1) {
+        for (int i = 0; i < g_reservation_count; i++) {
+            if (g_reservations[i].reservation_id == reservation_id) {
+                reservation_print_ticket(&g_reservations[i], &g_flights[fi]);
+                break;
+            }
+        }
+    }
+}
+
+static void flow_cancel_reservation(void) {
+    reservation_display_all();
+    if (g_reservation_count == 0) return;
+
+    int id = read_int_in_range("\nEnter reservation ID to cancel: ", 1, 100000);
+    if (reservation_cancel(id)) printf("Reservation %d cancelled and seats released.\n", id);
+    else printf("No active reservation found with that ID.\n");
+}
+
+static void passenger_menu(void) {
+    int choice;
+    do {
+        printf("\n----- Passenger Menu -----\n");
+        printf("1. View Flights\n2. Book a Seat\n3. Cancel a Reservation\n4. View All Reservations\n5. Back\n");
+        choice = read_int_in_range("Choose an option: ", 1, 5);
+        switch (choice) {
+            case 1: flight_display_list(); break;
+            case 2: flow_book_seat(); break;
+            case 3: flow_cancel_reservation(); break;
+            case 4: reservation_display_all(); break;
+        }
+    } while (choice != 5);
+}
+
+static void admin_menu(void) {
+    int choice;
+    do {
+        printf("\n----- Admin Menu -----\n");
+        printf("1. View Flights\n2. Add a Flight\n3. View All Reservations\n4. Back\n");
+        choice = read_int_in_range("Choose an option: ", 1, 4);
+
+        if (choice == 1) {
+            flight_display_list();
+        } else if (choice == 2) {
+            char flight_number[FLIGHTNO_LEN], origin[CITY_LEN], destination[CITY_LEN], departure_time[TIME_LEN];
+            read_line("Flight number (e.g. AI202): ", flight_number, FLIGHTNO_LEN);
+            read_line("Origin city: ", origin, CITY_LEN);
+            read_line("Destination city: ", destination, CITY_LEN);
+            read_line("Departure time (e.g. 14:30): ", departure_time, TIME_LEN);
+            float price = read_positive_float("Fare per seat: ");
+            int rows = read_int_in_range("Number of rows (1-20): ", 1, MAX_ROWS);
+            int cols = read_int_in_range("Seats per row (1-6): ", 1, MAX_COLS);
+            int before = g_flight_count;
+            flight_add(flight_number, origin, destination, departure_time, price, rows, cols);
+            if (g_flight_count > before) printf("Flight added successfully.\n");
+        } else if (choice == 3) {
+            reservation_display_all();
+        }
+    } while (choice != 4);
+}
+
+/* --------------------------------- main ----------------------------------- */
+int main(void) {
+    g_flight_count      = flight_load_all();
+    g_reservation_count = reservation_load_all();
+    seed_demo_flights_if_empty();
+
+    int choice;
+    do {
+        printf("\n===== AIRLINE RESERVATION SYSTEM =====\n");
+        printf("1. Passenger Menu\n2. Admin Menu\n3. Exit\n");
+        choice = read_int_in_range("Choose an option: ", 1, 3);
+        switch (choice) {
+            case 1: passenger_menu(); break;
+            case 2: admin_menu();     break;
+            case 3: printf("Safe travels! Goodbye.\n"); break;
+        }
+    } while (choice != 3);
+
+    return 0;
+}
